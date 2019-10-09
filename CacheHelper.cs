@@ -1,133 +1,90 @@
-using System;
+using Newtonsoft.Json;
 using System.Collections.Concurrent;
-using System.Timers;
+using System.Collections.Generic;
 
-namespace Common
+namespace Midgard.Common
 {
     /// <summary>
     /// 缓存管理
     /// </summary>
-    public class CacheHelper
+    public class CacheManager
     {
-        private static readonly CacheHelper helper = new CacheHelper();
-
-        static CacheHelper()
-        {
-        }
-        /// <summary>
-        /// 帮助类实例
-        /// </summary>
-        public static CacheHelper Instance
-        {
-            get
-            {
-                return helper;
-            }
-        }
-
-        private ConcurrentDictionary<string, ConcurrentDictionary<string, object>> cache = null;
-
-        private ConcurrentDictionary<string,DateTime> expire = null;
-
-        private Timer timer = null;
-
-        /// <summary>
-        /// 构造函数
-        /// </summary>
-        private CacheHelper()
+        private volatile static CacheManager helper = null;
+        private static readonly object lockHelper = new object();
+        private CacheManager()
         {
             cache = new ConcurrentDictionary<string, ConcurrentDictionary<string, object>>();
-            expire = new ConcurrentDictionary<string, DateTime>();
-            timer = new Timer(1000);
-            timer.Elapsed += new System.Timers.ElapsedEventHandler(OnTimedEvent);
-            timer.AutoReset = true;
-            timer.Enabled = true;
         }
-
-        private static int inTimer = 0;
-
         /// <summary>
-        /// System.Timers.Timer的回调方法
-        /// </summary>
-        /// <param name="source"></param>
-        /// <param name="e"></param>
-        private void OnTimedEvent(object source, ElapsedEventArgs e)
-        {
-            if (System.Threading.Interlocked.Exchange(ref inTimer, 1) == 0)
-            {
-                Remove();
-                System.Threading.Interlocked.Exchange(ref inTimer, 0);
-            }
-        }
-
-        /// <summary>
-        /// 检测循环删除过期缓存
+        /// 取得单例
         /// </summary>
         /// <returns></returns>
-        private bool Remove()
+        public static CacheManager GetInstance()
         {
-            try
+            if (helper == null)
             {
-                foreach (var expireTime in expire.Keys)
+                lock (lockHelper)
                 {
-                    string[] kv = expireTime.Split(new string[] { "***" }, StringSplitOptions.None);
-                    string region = kv[0];
-                    string key = kv[1];
-                    DateTime dt = expire[expireTime];
-                    if (dt < DateTime.Now)
-                        Remove(key, region);
+                    if (helper == null)
+                        helper = new CacheManager();
                 }
-                return true;
             }
-            catch
-            {
-                return false;
-            }
+            return helper;
         }
+        private ConcurrentDictionary<string, ConcurrentDictionary<string, object>> cache = null;
 
         /// <summary>
-        /// 判断缓存是否存在
+        /// 获取区块下的缓存
         /// </summary>
-        /// <param name="key"></param>
         /// <param name="region"></param>
         /// <returns></returns>
-        public bool Exists(string key, string region)
+        public ConcurrentDictionary<string, object> GetRegion(string region)
         {
             if (cache.ContainsKey(region))
-            {
-                var Region = cache[key];
-                return Region.ContainsKey(key);
-            }
+                return cache[region];
             else
-                return false;
+                return new ConcurrentDictionary<string, object>();
         }
 
         /// <summary>
-        /// 新增缓存 已存在就失败返回false
+        /// 新增缓存
         /// </summary>
         /// <param name="key"></param>
         /// <param name="value"></param>
         /// <param name="region"></param>
-        public bool Add(string key, object value, string region)
+        public object AddOrUpdate(string key, object value, string region)
         {
             var Region = GetRegion(region);
-            if (Region != null)
+            if (Region.Count > 0)
             {
                 if (Region.ContainsKey(key))
-                    return false;
+                {
+                    //var json = JsonConvert.SerializeObject(cache, LogManager.Get().IsDebugEnabled ? Formatting.Indented : Formatting.None);
+                    //LogManager.Get().ErrorFormat("cache333: {0}", json);
+                    Region[key] = value;
+                    return value;
+                }
                 else
                 {
-                    Region.TryAdd(key, value);
-                    cache.TryAdd(region, Region);
-                    return true;
+                    var va = Region.AddOrUpdate(key, value, (k, v) => value);
+                    var di = cache.AddOrUpdate(region, Region, (k, v) => Region);
+                    //LogManager.Get().Error("va2:" + JsonConvert.SerializeObject(va));
+                    //LogManager.Get().Error("di2:" + JsonConvert.SerializeObject(di));
+                    //var json = JsonConvert.SerializeObject(cache, LogManager.Get().IsDebugEnabled ? Formatting.Indented : Formatting.None);
+                    //LogManager.Get().ErrorFormat("cache222: {0}", json);
+                    return Region[key];
                 }
             }
             else
             {
                 var dict = new ConcurrentDictionary<string, object>();
-                dict.TryAdd(key, value);
-                cache.TryAdd(region, dict);
-                return true;
+                var va = dict.AddOrUpdate(key, value, (k, v) => value);
+                var di = cache.AddOrUpdate(region, dict, (k, v) => dict);
+                //LogManager.Get().Error("va:" + JsonConvert.SerializeObject(va));
+                //LogManager.Get().Error("di:" + JsonConvert.SerializeObject(di));
+                //var json = JsonConvert.SerializeObject(cache, LogManager.Get().IsDebugEnabled ? Formatting.Indented : Formatting.None);
+                //LogManager.Get().ErrorFormat("cache111: {0}", json);
+                return value;
             }
         }
 
@@ -141,27 +98,8 @@ namespace Common
         {
             object obj = null;
             var Region = GetRegion(region);
-            if (Region != null && Region.ContainsKey(key))
+            if (Region.ContainsKey(key))
                 return Region.TryRemove(key, out obj);
-            else
-                return false;
-        }
-
-        /// <summary>
-        /// 更新缓存 没找到就是失败返回false
-        /// </summary>
-        /// <param name="key"></param>
-        /// <param name="value"></param>
-        /// <param name="region"></param>
-        /// <returns></returns>
-        public bool Update(string key, object value, string region)
-        {
-            var Region = GetRegion(region);
-            if (Region != null && Region.ContainsKey(key))
-            {
-                Region[key] = value;
-                return true;
-            }
             else
                 return false;
         }
@@ -175,23 +113,28 @@ namespace Common
         public object Get(string key, string region)
         {
             var Region = GetRegion(region);
-            if (Region != null && Region.ContainsKey(key))
+            if (Region.ContainsKey(key))
                 return Region[key];
             else
                 return null;
         }
 
         /// <summary>
-        /// 获取区块下的缓存
+        /// 通过区块前缀获取
         /// </summary>
-        /// <param name="region"></param>
+        /// <param name="regionPrefix"></param>
         /// <returns></returns>
-        public ConcurrentDictionary<string, object> GetRegion(string region)
+        public IEnumerable<ConcurrentDictionary<string, object>> GetRegionByPrefix(string regionPrefix)
         {
-            if (cache.ContainsKey(region))
-                return cache[region];
-            else
-                return null;
+            List<ConcurrentDictionary<string, object>> result = new List<ConcurrentDictionary<string, object>>();
+            foreach (var key in cache.Keys)
+            {
+                if (key.StartsWith(regionPrefix))
+                {
+                    result.Add(cache[key]);
+                }
+            }
+            return result;
         }
 
         /// <summary>
@@ -206,28 +149,6 @@ namespace Common
                 return cache.TryRemove(region, out obj);
             else
                 return false;
-        }
-
-        /// <summary>
-        /// 设置缓存过期时间
-        /// </summary>
-        /// <param name="key"></param>
-        /// <param name="region"></param>
-        /// <param name="expireTime"></param>
-        /// <returns></returns>
-        public bool Expire(string key, string region, TimeSpan expireTime)
-        {
-            try
-            {
-                string k = region + "***" + key;
-                DateTime dt = DateTime.Now + expireTime;
-                if (expire.ContainsKey(k))
-                    expire[k] = dt;
-                else
-                    expire.TryAdd(k, dt);
-                return true;
-            }
-            catch { return false; }
         }
     }
 }
